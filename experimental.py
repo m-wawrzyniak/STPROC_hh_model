@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
 # Global parameters
-
 gna = 120  # mS*cm^-2
 gk = 36  # mS*cm^-2
 gleak = 0.3  # mS*cm^-2
@@ -19,14 +18,11 @@ noise_m_amp = (0.2)**(1/3)
 noise_h_amp = 0.1
 
 params = {
-    'noise_i_amp': 15
+    'noise_i_amp': 13
 }
 
-"""
-Sodium current:
-m - activation gating variable
-h - inactivation gating variable
-"""
+
+# Sodium current variables:
 
 def a_m(v):
     return 0.1*(v+40)/(1-np.exp(-(v+40)/10))
@@ -41,37 +37,34 @@ def b_h(v):
 def ina(v, m, h):
     return gna*m**3*h*(v-ena)
 
-"""
-Potassium current:
-n - activation gating variable
-"""
+# Potassium current variables:
 
 def a_n(v):
     return 0.01*(v+55)/(1-np.exp(-(v+55)/10))
+
 def b_n(v):
     return 0.125*np.exp(-(v+65)/80)
 
 def ik(v, n):
     return gk*n**4*(v-ek)
 
-"""
-Additional currents:
-"""
+
+# Other currents:
 
 def ileak(v):
     return gleak*(v-eleak)
 
 def istim(t, amp = 10.0):
-    #return amp if 20 <= t <= 60 else 0.0
-    return 0
+    return amp if 20 <= t <= 60 else 0.0
 
-"""
-Possible 'noise' quantities:
-"""
-def noise_i():
+def noise_i(noise_mem):
     samp = np.random.normal(0, 1)
-    return params['noise_i_amp']*samp  # Units: (uA/cm^2)
+    noise_i = params['noise_i_amp']*samp  # Units: (uA/cm^2)
+    noise_mem.append(noise_i)
+    return noise_i
 
+
+# Legacy
 def noise_m():
     samp = np.random.normal(0, 1)
     return noise_m_amp*samp  # Units: 1/s
@@ -81,9 +74,9 @@ def noise_h():
     return noise_h_amp*samp  # Units: 1/s
 
 
-"""
-HH Ordinary Differential Equations system 
-"""
+
+# HH Ordinary Differential Equations system
+
 def hh_ode_det(t, num_state):
     v, m, h, n = num_state
 
@@ -91,19 +84,20 @@ def hh_ode_det(t, num_state):
     dh = a_h(v)*(1-h)-b_h(v)*h
     dn = a_n(v)*(1-n)-b_n(v)*n
 
-    dv = istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) / cm
+    dv = (istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) )/ cm
 
     return [dv, dm, dh, dn]
 
 
-def hh_ode_istoch(t, num_state):
+def hh_ode_istoch(t, num_state, noise_mem):
     v, m, h, n = num_state
 
+    i_noise = noise_i(noise_mem)
     dm = a_m(v)*(1-m)-b_m(v)*m
     dh = a_h(v)*(1-h)-b_h(v)*h
     dn = a_n(v)*(1-n)-b_n(v)*n
 
-    dv = noise_i() + istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) / cm
+    dv = (i_noise + istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) )/ cm
 
     return [dv, dm, dh, dn]
 
@@ -114,7 +108,7 @@ def hh_ode_mstoch(t, num_state):
     dh = a_h(v)*(1-h)-b_h(v)*h
     dn = a_n(v)*(1-n)-b_n(v)*n
 
-    dv = istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) / cm
+    dv = (istim(t) - ina(v, m, h) - ik(v, n) - ileak(v)) / cm
 
     return [dv, dm, dh, dn]
 
@@ -125,7 +119,7 @@ def hh_ode_hstoch(t, num_state):
     dh = a_h(v) * (1 - h) - b_h(v) * h + noise_h()
     dn = a_n(v) * (1 - n) - b_n(v) * n
 
-    dv = istim(t) - ina(v, m, h) - ik(v, n) - ileak(v) / cm
+    dv = (istim(t) - ina(v, m, h) - ik(v, n) - ileak(v)) / cm
 
     return [dv, dm, dh, dn]
 
@@ -136,6 +130,17 @@ def run_sim(ode_set, init_y, t_span=(0, 100)):
     t_eval = np.linspace(*t_span, 1000)
     sol = solve_ivp(ode_set, t_span, init_y, t_eval=t_eval, method='RK45')
     return sol
+
+def run_sim_2(ode_set, init_y, t_span=(0, 100)):
+    noise_mem = []
+
+    def wrapped_ode(t, y):
+        return ode_set(t, y, noise_mem)
+
+    t_eval = np.linspace(*t_span, 1000)
+    sol = solve_ivp(wrapped_ode, t_span, init_y, t_eval=t_eval, method='RK45')
+    return sol, noise_mem
+
 
 def plot_sim_res(sol, title=''):
     # getting the variables from simulation solution
@@ -232,6 +237,61 @@ def plot_sim_res(sol, title=''):
     fig2.tight_layout()
     plt.show()
 
+def plot_noise_stim_ration(sol, noise_mem, title=''):
+    v, m, h, n = sol.y
+    t = sol.t
+
+    # Compute currents
+    ina_vals = np.array([ina(vv, mm, hh) for vv, mm, hh in zip(v, m, h)])
+    ik_vals = np.array([ik(vv, nn) for vv, nn in zip(v, n)])
+    ileak_vals = np.array([ileak(vv) for vv in v])
+    istim_vals = np.array([istim(tt) for tt in t])
+
+    clrs = plt.get_cmap('tab10')
+
+    fig1 = plt.figure(figsize=(8, 16))
+    gs = gridspec.GridSpec(4, 1, height_ratios=[0.25, 0.25, 1, 1])
+
+    ax_stim = fig1.add_subplot(gs[0])
+    ax_noise = fig1.add_subplot(gs[1])
+    ax_v = fig1.add_subplot(gs[2], sharex=ax_stim)
+    ax_i = fig1.add_subplot(gs[3], sharex=ax_stim)
+
+    ax_stim.plot(t, istim_vals, color=clrs(4), linewidth=1)
+    ax_noise.plot(t, noise_mem[:len(t)], color=clrs(4), linewidth=1)  # Clip just in case
+    ax_v.plot(t, v, color=clrs(0), label='V (mV)')
+    ax_i.plot(t, ina_vals, color=clrs(1), label='I_Na')
+    ax_i.plot(t, ik_vals, color=clrs(2), label='I_K')
+    ax_i.plot(t, ileak_vals, color=clrs(3), label='I_leak')
+
+    ax_stim.set_ylabel('I_stim (mA/cm²)')
+    ax_stim.set_title('Stimulation current')
+    ax_stim.grid(True)
+    ax_stim.set_ylim(-45, 45)
+
+    ax_noise.set_ylabel('I_noise (mA/cm²)')
+    ax_noise.set_title('Noise current')
+    ax_noise.grid(True)
+    ax_noise.set_ylim(-45, 45)
+
+    ax_v.set_ylabel('Voltage (mV)')
+    ax_v.set_title('Membrane potential v. time')
+    ax_v.grid(True)
+    ax_v.legend()
+    ax_v.set_ylim(-80, 60)
+
+    ax_i.set_ylabel('Current (mA/cm²)')
+    ax_i.set_xlabel('Time (ms)')
+    ax_i.set_title('Ion currents v. time')
+    ax_i.grid(True)
+    ax_i.legend()
+    ax_i.set_ylim(-900, 900)
+
+    fig1.suptitle(title)
+    fig1.tight_layout(rect=[0, 0, 1, 0.97])
+    plt.show()
+
+
 def plot_curr_noise_increment(amp_start = 0, amp_stop = 50, amp_increment = 5, t_span=(0, 200), show=False):
     amps = list(range(amp_start, amp_stop, amp_increment))
     frs = []
@@ -321,5 +381,10 @@ inoise_sol = run_sim(hh_ode_istoch, y0)
 plot_sim_res(inoise_sol, f'HH model with current noise amp={noise_i_amp}, WITHOUT external current stim: ')
 """
 
-amps, frs = plot_curr_noise_increment(0, 201, 10, t_span=(0,800), show=False)
+"""amps, frs = plot_curr_noise_increment(0, 201, 10, t_span=(0,800), show=False)
 plot_firing_rate_vs_noise(amps, frs)
+"""
+
+# Signal noise ratio
+inoise_sol, noise_mem = run_sim_2(hh_ode_istoch, y0)
+plot_noise_stim_ration(inoise_sol, noise_mem,f"Comparison of stimulus current v. noise current magnitude (amp={params['noise_i_amp']}): ")
